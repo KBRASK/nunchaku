@@ -35,7 +35,7 @@ from ..models.pulid.encoders_transformer import IDFormer, PerceiverAttentionCA
 from ..models.pulid.eva_clip import create_model_and_transforms
 from ..models.pulid.eva_clip.constants import OPENAI_DATASET_MEAN, OPENAI_DATASET_STD
 from ..models.pulid.utils import img2tensor, resize_numpy_image_long, tensor2img
-from ..models.transformers import NunchakuFluxTransformer2DModel
+from ..models.transformers import NunchakuFluxTransformer2DModelV2
 from ..utils import load_state_dict_in_safetensors, sha256sum
 
 # Get log level from environment variable (default to INFO)
@@ -84,7 +84,7 @@ def check_antelopev2_dir(antelopev2_dirpath: str | os.PathLike[str]) -> bool:
     return True
 
 
-class PuLIDPipeline(nn.Module):
+class PuLIDPipelineV2(nn.Module):
     """
     PyTorch module for extracting identity embeddings using PuLID, InsightFace, and EVA-CLIP.
 
@@ -134,7 +134,7 @@ class PuLIDPipeline(nn.Module):
 
     def __init__(
         self,
-        dit: NunchakuFluxTransformer2DModel,
+        dit: NunchakuFluxTransformer2DModelV2,
         device: str | torch.device,
         weight_dtype: str | torch.dtype = torch.bfloat16,
         onnx_provider: str = "gpu",
@@ -161,7 +161,7 @@ class PuLIDPipeline(nn.Module):
             [PerceiverAttentionCA().to(self.device, self.weight_dtype) for _ in range(num_ca)]
         )
 
-        dit.transformer_blocks[0].pulid_ca = self.pulid_ca
+        dit.pulid_ca = self.pulid_ca
 
         # preprocessors
         # face align and parsing
@@ -353,7 +353,7 @@ class PuLIDPipeline(nn.Module):
         return id_embedding, uncond_id_embedding
 
 
-class PuLIDFluxPipeline(FluxPipeline):
+class PuLIDFluxPipelineV2(FluxPipeline):
     """
     FluxPipeline with PuLID identity embedding support.
 
@@ -422,7 +422,7 @@ class PuLIDFluxPipeline(FluxPipeline):
         self.onnx_provider = onnx_provider
 
         # Init PuLID pipeline (injects ID encoder into transformer)
-        self.pulid_model = PuLIDPipeline(
+        self.pulid_model = PuLIDPipelineV2(
             dit=self.transformer,  # directly mutate transformer with pulid_ca
             device=self.pulid_device,
             weight_dtype=self.weight_dtype,

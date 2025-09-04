@@ -47,64 +47,60 @@ def fused_gelu_mlp(x: torch.Tensor, fc1: SVDQW4A4Linear, fc2: SVDQW4A4Linear, pa
     return output
 
 
-def fused_qkv_norm_rottary(
-    x: torch.Tensor,
-    proj: SVDQW4A4Linear,
-    norm_q: RMSNorm,
-    norm_k: RMSNorm,
-    rotary_emb: torch.Tensor,
-    output: torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
-    attn_tokens: int = 0,
-) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
-    assert isinstance(norm_q, RMSNorm)
-    assert isinstance(norm_k, RMSNorm)
+# def fused_qkv_norm_rottary(
+#     x: torch.Tensor,
+#     proj: SVDQW4A4Linear,
+#     norm_q: RMSNorm | None = None,
+#     norm_k: RMSNorm | None = None,
+#     rotary_emb: torch.Tensor | None = None,
+#     output: torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor] | None = None,
+#     attn_tokens: int = 0,
+# ) -> torch.Tensor | tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+#     # assert isinstance(norm_q, RMSNorm)
+#     # assert isinstance(norm_k, RMSNorm)
 
-    batch_size, seq_len, channels = x.shape
-    x = x.view(batch_size * seq_len, channels)
-    quantized_x, ascales, lora_act = proj.quantize(x)
+#     batch_size, seq_len, channels = x.shape
+#     x = x.view(batch_size * seq_len, channels)
+#     quantized_x, ascales, lora_act = proj.quantize(x)
 
-    if output is None:
-        output = torch.empty(quantized_x.shape[0], proj.out_features, dtype=x.dtype, device=x.device)
+#     if output is None:
+#         output = torch.empty(quantized_x.shape[0], proj.out_features, dtype=x.dtype, device=x.device)
 
-    if isinstance(output, tuple):
-        assert len(output) == 3
-        output_q, output_k, output_v = output
-        svdq_gemm_w4a4_cuda(
-            act=quantized_x,
-            wgt=proj.qweight,
-            ascales=ascales,
-            wscales=proj.wscales,
-            lora_act_in=lora_act,
-            lora_up=proj.proj_up,
-            bias=proj.bias,
-            fp4=proj.precision == "nvfp4",
-            alpha=proj.wtscale,
-            wcscales=proj.wcscales,
-            norm_q=norm_q.weight,
-            norm_k=norm_k.weight,
-            rotary_emb=rotary_emb,
-            out_q=output_q,
-            out_k=output_k,
-            out_v=output_v,
-            attn_tokens=attn_tokens,
-        )
-        return output_q, output_k, output_v
-    else:
-        svdq_gemm_w4a4_cuda(
-            act=quantized_x,
-            wgt=proj.qweight,
-            out=output,
-            ascales=ascales,
-            wscales=proj.wscales,
-            lora_act_in=lora_act,
-            lora_up=proj.proj_up,
-            bias=proj.bias,
-            fp4=proj.precision == "nvfp4",
-            alpha=proj.wtscale,
-            wcscales=proj.wcscales,
-            norm_q=norm_q.weight,
-            norm_k=norm_k.weight,
-            rotary_emb=rotary_emb,
-        )
-        output = output.view(batch_size, seq_len, -1)
-        return output
+#     if isinstance(output, tuple):
+#         assert len(output) == 3
+#         output_q, output_k, output_v = output
+#         svdq_gemm_w4a4_cuda(
+#             act=quantized_x,
+#             wgt=proj.qweight,
+#             ascales=ascales,
+#             wscales=proj.wscales,
+#             lora_act_in=lora_act,
+#             lora_up=proj.proj_up,
+#             bias=proj.bias,
+#             fp4=proj.precision == "nvfp4",
+#             alpha=proj.wtscale,
+#             wcscales=proj.wcscales,
+#             rotary_emb=rotary_emb,
+#             out_q=output_q,
+#             out_k=output_k,
+#             out_v=output_v,
+#             attn_tokens=attn_tokens,
+#         )
+#         return output_q, output_k, output_v
+#     else:
+#         svdq_gemm_w4a4_cuda(
+#             act=quantized_x,
+#             wgt=proj.qweight,
+#             out=output,
+#             ascales=ascales,
+#             wscales=proj.wscales,
+#             lora_act_in=lora_act,
+#             lora_up=proj.proj_up,
+#             bias=proj.bias,
+#             fp4=proj.precision == "nvfp4",
+#             alpha=proj.wtscale,
+#             wcscales=proj.wcscales,
+#             rotary_emb=rotary_emb,
+#         )
+#         output = output.view(batch_size, seq_len, -1)
+#         return output

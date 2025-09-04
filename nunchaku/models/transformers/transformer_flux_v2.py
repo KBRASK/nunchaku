@@ -1,7 +1,7 @@
 import json
 import os
 from pathlib import Path
-from typing import Any, Dict, Optional, Tuple, Union
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 import torch
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
@@ -19,10 +19,12 @@ from ...utils import get_precision
 from ..attention import NunchakuBaseAttention, NunchakuFeedForward
 from ..attention_processors.flux import NunchakuFluxFA2Processor, NunchakuFluxFP16AttnProcessor
 from ..embeddings import NunchakuFluxPosEmbed, pack_rotemb
-from ..linear import SVDQW4A4Linear
+from ..linear import SVDQW4A4Linear, NunchakuLinear
 from ..normalization import NunchakuAdaLayerNormZero, NunchakuAdaLayerNormZeroSingle
 from ..utils import fuse_linears
 from .utils import NunchakuModelLoaderMixin, pad_tensor
+
+from ..diffusers_embeddings import FluxPosEmbed
 
 
 class NunchakuFluxAttention(NunchakuBaseAttention):
@@ -47,11 +49,12 @@ class NunchakuFluxAttention(NunchakuBaseAttention):
         # fuse the qkv
         with torch.device("meta"):
             to_qkv = fuse_linears([other.to_q, other.to_k, other.to_v])
-        self.to_qkv = SVDQW4A4Linear.from_linear(to_qkv, **kwargs)
+        self.to_qkv = NunchakuLinear.from_linear(to_qkv, **kwargs)
+        # self.to_qkv = SVDQW4A4Linear.from_linear(to_qkv, **kwargs)
 
         if not self.pre_only:
             self.to_out = other.to_out
-            self.to_out[0] = SVDQW4A4Linear.from_linear(self.to_out[0], **kwargs)
+            self.to_out[0] = NunchakuLinear.from_linear(self.to_out[0], **kwargs)
 
         if self.added_kv_proj_dim is not None:
             self.norm_added_q = other.norm_added_q
@@ -60,15 +63,17 @@ class NunchakuFluxAttention(NunchakuBaseAttention):
             # fuse the add_qkv
             with torch.device("meta"):
                 add_qkv_proj = fuse_linears([other.add_q_proj, other.add_k_proj, other.add_v_proj])
-            self.add_qkv_proj = SVDQW4A4Linear.from_linear(add_qkv_proj, **kwargs)
-            self.to_add_out = SVDQW4A4Linear.from_linear(other.to_add_out, **kwargs)
+            self.add_qkv_proj = NunchakuLinear.from_linear(add_qkv_proj, **kwargs)
+            # self.add_qkv_proj = SVDQW4A4Linear.from_linear(add_qkv_proj, **kwargs)
+
+            self.to_add_out = NunchakuLinear.from_linear(other.to_add_out, **kwargs)
 
     def forward(
         self,
         hidden_states: torch.Tensor,
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        image_rotary_emb: Tuple[torch.Tensor, torch.Tensor] | torch.Tensor = None,
+        image_rotary_emb=None,
         **kwargs,
     ):
         return self.processor(
@@ -89,7 +94,6 @@ class NunchakuFluxAttention(NunchakuBaseAttention):
 
 
 class NunchakuFluxTransformerBlock(FluxTransformerBlock):
-
     def __init__(self, block: FluxTransformerBlock, scale_shift: float = 1, **kwargs):
         super(FluxTransformerBlock, self).__init__()
         self.scale_shift = scale_shift
@@ -105,12 +109,14 @@ class NunchakuFluxTransformerBlock(FluxTransformerBlock):
         self.ff = NunchakuFeedForward(block.ff, **kwargs)
         self.ff_context = NunchakuFeedForward(block.ff_context, **kwargs)
 
+        self.packed = True
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         encoder_hidden_states: torch.Tensor,
         temb: torch.Tensor,
-        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        image_rotary_emb=None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
     ):
         if joint_attention_kwargs is not None and len(joint_attention_kwargs) > 0:
@@ -182,14 +188,15 @@ class NunchakuFluxSingleTransformerBlock(FluxSingleTransformerBlock):
         self.attn = NunchakuFluxAttention(block.attn, **kwargs)
         self.attn.to_out = SVDQW4A4Linear.from_linear(block.proj_out, in_features=self.mlp_fc1.in_features, **kwargs)
 
+        self.packed = True
+
     def forward(
         self,
         hidden_states: torch.Tensor,
         temb: torch.Tensor,
-        image_rotary_emb: Optional[Tuple[torch.Tensor, torch.Tensor]] = None,
+        image_rotary_emb=None,
         joint_attention_kwargs: Optional[Dict[str, Any]] = None,
     ) -> torch.Tensor:
-
         residual = hidden_states
         norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
 
@@ -220,9 +227,9 @@ class NunchakuFluxSingleTransformerBlock(FluxSingleTransformerBlock):
 
 
 class NunchakuFluxTransformer2DModelV2(FluxTransformer2DModel, NunchakuModelLoaderMixin):
-
     def _patch_model(self, **kwargs):
-        self.pos_embed = NunchakuFluxPosEmbed(dim=self.inner_dim, theta=10000, axes_dim=self.pos_embed.axes_dim)
+        self.pos_embed = FluxPosEmbed(theta=10000, axes_dim=(16, 56, 56))
+
         for i, block in enumerate(self.transformer_blocks):
             self.transformer_blocks[i] = NunchakuFluxTransformerBlock(block, scale_shift=0, **kwargs)
         for i, block in enumerate(self.single_transformer_blocks):
@@ -342,26 +349,12 @@ class NunchakuFluxTransformer2DModelV2(FluxTransformer2DModel, NunchakuModelLoad
         txt_tokens = encoder_hidden_states.shape[1]
         img_tokens = hidden_states.shape[1]
 
-        assert image_rotary_emb.ndim == 6
-        assert image_rotary_emb.shape[0] == 1
-        assert image_rotary_emb.shape[1] == 1
-        assert image_rotary_emb.shape[2] == 1 * (txt_tokens + img_tokens)
-        # [1, tokens, head_dim / 2, 1, 2] (sincos)
-        image_rotary_emb = image_rotary_emb.reshape([1, txt_tokens + img_tokens, *image_rotary_emb.shape[3:]])
-        rotary_emb_txt = image_rotary_emb[:, :txt_tokens, ...]  # .to(self.dtype)
-        rotary_emb_img = image_rotary_emb[:, txt_tokens:, ...]  # .to(self.dtype)
-        rotary_emb_single = image_rotary_emb
-
-        rotary_emb_txt = pack_rotemb(pad_tensor(rotary_emb_txt, 256, 1))
-        rotary_emb_img = pack_rotemb(pad_tensor(rotary_emb_img, 256, 1))
-        rotary_emb_single = pack_rotemb(pad_tensor(rotary_emb_single, 256, 1))
-
         for index_block, block in enumerate(self.transformer_blocks):
             encoder_hidden_states, hidden_states = block(
                 hidden_states=hidden_states,
                 encoder_hidden_states=encoder_hidden_states,
                 temb=temb,
-                image_rotary_emb=(rotary_emb_img, rotary_emb_txt),
+                image_rotary_emb=image_rotary_emb,
                 joint_attention_kwargs=joint_attention_kwargs,
             )
 
@@ -374,7 +367,7 @@ class NunchakuFluxTransformer2DModelV2(FluxTransformer2DModel, NunchakuModelLoad
             hidden_states = block(
                 hidden_states=hidden_states,
                 temb=temb,
-                image_rotary_emb=rotary_emb_single,
+                image_rotary_emb=image_rotary_emb,
                 joint_attention_kwargs=joint_attention_kwargs,
             )
 

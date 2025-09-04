@@ -1,5 +1,5 @@
 """
-Implements the :class:`NunchakuFluxTransformer2dModel`, a quantized transformer for Diffusers with efficient inference and LoRA support.
+Implements the :class:`NunchakuFluxTransformer2DModel`, a quantized transformer for Diffusers with efficient inference and LoRA support.
 """
 
 import json
@@ -459,7 +459,7 @@ def load_quantized_module(
     return m
 
 
-class NunchakuFluxTransformer2dModel(FluxTransformer2DModel, NunchakuModelLoaderMixin):
+class NunchakuFluxTransformer2DModel(FluxTransformer2DModel, NunchakuModelLoaderMixin):
     """
     Nunchaku FLUX Transformer 2D Model.
 
@@ -507,7 +507,7 @@ class NunchakuFluxTransformer2dModel(FluxTransformer2DModel, NunchakuModelLoader
         guidance_embeds: bool = False,
         axes_dims_rope: tuple[int] = (16, 56, 56),
     ):
-        super(NunchakuFluxTransformer2dModel, self).__init__(
+        super(NunchakuFluxTransformer2DModel, self).__init__(
             patch_size=patch_size,
             in_channels=in_channels,
             out_channels=out_channels,
@@ -546,7 +546,7 @@ class NunchakuFluxTransformer2dModel(FluxTransformer2DModel, NunchakuModelLoader
 
         Returns
         -------
-        NunchakuFluxTransformer2dModel or (NunchakuFluxTransformer2dModel, dict)
+        NunchakuFluxTransformer2DModel or (NunchakuFluxTransformer2DModel, dict)
             The loaded model, and optionally metadata if `return_metadata=True`.
         """
         device = kwargs.get("device", "cuda")
@@ -633,7 +633,7 @@ class NunchakuFluxTransformer2dModel(FluxTransformer2DModel, NunchakuModelLoader
 
         Returns
         -------
-        self : NunchakuFluxTransformer2dModel
+        self : NunchakuFluxTransformer2DModel
             The model with injected quantized module.
         """
         print("Injecting quantized module")

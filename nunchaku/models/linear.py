@@ -4,6 +4,134 @@ from torch import nn
 from ..ops.gemm import svdq_gemm_w4a4_cuda
 from ..ops.gemv import awq_gemv_w4a16_cuda
 from ..ops.quantize import svdq_quantize_w4a4_act_fuse_lora_cuda
+from ..ops.unpack import unpack_lowrank_weight, unpack_weight, unpack_scale
+import torch.nn.functional as F
+import gc
+
+
+class NunchakuLinear(nn.Module):
+    def __init__(
+        self,
+        in_features: int,
+        out_features: int,
+        rank: int = 32,
+        bias: bool = True,
+        precision: str = "int4",
+        torch_dtype: torch.dtype = torch.bfloat16,
+        device: str | torch.device = "cpu",
+    ):
+        super(NunchakuLinear, self).__init__()
+        self.register_buffer("dequantized_weight", None)
+        self.in_features = in_features
+        self.out_features = out_features
+        self.rank = rank
+
+        self.precision = precision
+        self.torch_dtype = torch_dtype
+        self.group_size = None
+
+        if precision == "nvfp4":
+            self.group_size = 16
+        elif precision == "int4":
+            self.group_size = 64
+        else:
+            raise ValueError(f"Invalid precision: {precision}")
+
+        self.qweight = nn.Parameter(
+            torch.empty(out_features, in_features // 2, dtype=torch.int8, device=device), requires_grad=False
+        )
+        self.bias = (
+            nn.Parameter(torch.empty(out_features, dtype=torch_dtype, device=device), requires_grad=True)
+            if bias
+            else None
+        )
+
+        self.wscales = nn.Parameter(
+            torch.empty(
+                in_features // self.group_size,
+                out_features,
+                dtype=torch_dtype if precision == "int4" else torch.float8_e4m3fn,
+                device=device,
+            ),
+            requires_grad=False,
+        )
+        self.smooth_factor = nn.Parameter(
+            torch.empty(in_features, dtype=torch_dtype, device=device), requires_grad=False
+        )
+        self.smooth_factor_orig = nn.Parameter(
+            torch.empty(in_features, dtype=torch_dtype, device=device), requires_grad=False
+        )
+
+        self.proj_down = nn.Parameter(torch.empty(in_features, rank, dtype=torch_dtype, device=device))
+        self.proj_up = nn.Parameter(torch.empty(out_features, rank, dtype=torch_dtype, device=device))
+
+        self.wtscale = None
+        self.wcscales = None
+        if precision == "nvfp4":
+            self.wtscale = nn.Parameter(torch.ones(1, dtype=torch_dtype, device=device), requires_grad=False)
+            self.group_size = 16
+            self.wcscales = nn.Parameter(
+                torch.ones(out_features, dtype=torch_dtype, device=device), requires_grad=False
+            )
+        else:
+            self.group_size = 64
+
+        self.act_unsigned = False
+        self.packed = True
+        self.hidden_dim = 3072
+
+    def dequantize_weight(self) -> torch.Tensor:
+        qweight = self.qweight.view(self.out_features, self.in_features//self.group_size, self.group_size).to(self.torch_dtype)
+        scales = self.wscales.view(self.out_features, self.in_features//self.group_size, 1)
+        dequantized_weight = qweight * scales
+        # scales_transposed = self.wscales.transpose(0, 1)
+        
+        # scales = scales_transposed.repeat_interleave(self.group_size, dim=0)
+        # dequantized_weight = self.qweight.to(self.torch_dtype) * scales
+
+        return dequantized_weight.view(self.out_features, self.in_features)
+
+    @classmethod
+    def from_linear(cls, linear: nn.Linear, **kwargs):
+        in_features = kwargs.pop("in_features", linear.in_features)
+        return cls(
+            in_features=in_features,
+            out_features=linear.out_features,
+            bias=linear.bias is not None,
+            torch_dtype=linear.weight.dtype,
+            device=linear.weight.device,
+            **kwargs,
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.packed: 
+            self.proj_down.data = unpack_lowrank_weight(self.proj_down.data, down=True)
+            self.proj_up.data = unpack_lowrank_weight(self.proj_up.data, down=False)
+            self.qweight.data = unpack_weight(self.qweight.data, n=self.out_features, k=self.in_features, bits=4)
+            self.smooth_factor.data = unpack_scale(self.smooth_factor.data, n=self.in_features, group_size=-1).view(-1)
+            if self.bias is not None:
+                self.bias.data = unpack_scale(self.bias.data, n=self.out_features, group_size=self.group_size).view(-1)
+
+            self.wscales.data = unpack_scale(self.wscales.data, n=self.out_features, group_size=-1)
+            self.dequantized_weight = self.dequantize_weight()
+            del self.qweight
+            del self.wscales
+            del self.smooth_factor_orig
+            self.packed = False
+
+        lora_output = (x @ self.proj_down.t()) @ self.proj_up.t()
+
+        smooth_factor_qkv = self.smooth_factor
+        x_smoothed = x / smooth_factor_qkv
+
+        main_output = F.linear(x_smoothed, self.dequantized_weight)
+
+        output = main_output + lora_output
+
+        if self.bias is not None:
+            output += self.bias
+
+        return output
 
 
 class SVDQW4A4Linear(nn.Module):
@@ -70,6 +198,7 @@ class SVDQW4A4Linear(nn.Module):
             )
 
         self.act_unsigned = False
+        self.packed = True
 
     @classmethod
     def from_linear(cls, linear: nn.Linear, **kwargs):

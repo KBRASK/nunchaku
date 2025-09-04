@@ -5,7 +5,8 @@ import torch
 from torch.nn import functional as F
 
 from ..._C.ops import attention_fp16
-from ...ops.fused import fused_qkv_norm_rottary
+#from ...ops.fused import fused_qkv_norm_rottary
+from ..diffusers_embeddings import apply_rotary_emb
 
 
 class NunchakuFluxFA2Processor:
@@ -16,7 +17,7 @@ class NunchakuFluxFA2Processor:
         hidden_states: torch.Tensor,
         encoder_hidden_states: Optional[torch.Tensor] = None,
         attention_mask: Optional[torch.Tensor] = None,
-        image_rotary_emb: Tuple[torch.Tensor, torch.Tensor] | torch.Tensor = None,
+        image_rotary_emb=None,
         **kwargs,
     ) -> torch.Tensor | Tuple[torch.Tensor, torch.Tensor]:
         # Adapted from https://github.com/huggingface/diffusers/blob/50dea89dc6036e71a00bc3d57ac062a80206d9eb/src/diffusers/models/attention_processor.py#L2275
@@ -25,30 +26,43 @@ class NunchakuFluxFA2Processor:
 
         batch_size, _, channels = hidden_states.shape
         assert channels == attn.heads * attn.head_dim
-        qkv = fused_qkv_norm_rottary(
-            hidden_states,
-            attn.to_qkv,
-            attn.norm_q,
-            attn.norm_k,
-            image_rotary_emb[0] if isinstance(image_rotary_emb, tuple) else image_rotary_emb,
-        )
+        # qkv = fused_qkv_norm_rottary(hidden_states, attn.to_qkv)
+        qkv = attn.to_qkv(hidden_states)
+        query, key, value = qkv.chunk(3, dim=-1)
+
+        query = query.unflatten(-1, (attn.heads, -1))
+        key = key.unflatten(-1, (attn.heads, -1))
+        value = value.unflatten(-1, (attn.heads, -1))
+
+        query = attn.norm_q(query)
+        key = attn.norm_k(key)
 
         if attn.added_kv_proj_dim is not None:
-            assert encoder_hidden_states is not None
-            assert isinstance(image_rotary_emb, tuple)
-            qkv_context = fused_qkv_norm_rottary(
-                encoder_hidden_states, attn.add_qkv_proj, attn.norm_added_q, attn.norm_added_k, image_rotary_emb[1]
-            )
-            qkv = torch.cat([qkv_context, qkv], dim=1)
+            qkv_context = attn.add_qkv_proj(encoder_hidden_states)
+            # qkv_context = fused_qkv_norm_rottary(encoder_hidden_states, attn.add_qkv_proj)
+            encoder_query, encoder_key, encoder_value = qkv_context.chunk(3, dim=-1)
 
-        query, key, value = qkv.chunk(3, dim=-1)
-        query = query.view(batch_size, -1, attn.heads, attn.head_dim).transpose(1, 2)
-        key = key.view(batch_size, -1, attn.heads, attn.head_dim).transpose(1, 2)
-        value = value.view(batch_size, -1, attn.heads, attn.head_dim).transpose(1, 2)
+            encoder_query = encoder_query.unflatten(-1, (attn.heads, -1))
+            encoder_key = encoder_key.unflatten(-1, (attn.heads, -1))
+            encoder_value = encoder_value.unflatten(-1, (attn.heads, -1))
+
+            encoder_query = attn.norm_added_q(encoder_query)
+            encoder_key = attn.norm_added_k(encoder_key)
+            query = torch.cat([encoder_query, query], dim=1)
+            key = torch.cat([encoder_key, key], dim=1)
+            value = torch.cat([encoder_value, value], dim=1)
+
+        if image_rotary_emb is not None:
+            query = apply_rotary_emb(query, image_rotary_emb, sequence_dim=1)
+            key = apply_rotary_emb(key, image_rotary_emb, sequence_dim=1)
+
+        query, key, value = (x.permute(0, 2, 1, 3) for x in (query, key, value))
         hidden_states = F.scaled_dot_product_attention(
             query, key, value, attn_mask=attention_mask, dropout_p=0.0, is_causal=False
         )
-        hidden_states = hidden_states.transpose(1, 2).reshape(batch_size, -1, attn.heads * attn.head_dim)
+        hidden_states = hidden_states.permute(0, 2, 1, 3)
+
+        hidden_states = hidden_states.flatten(2, 3)
         hidden_states = hidden_states.to(query.dtype)
 
         if encoder_hidden_states is not None:
