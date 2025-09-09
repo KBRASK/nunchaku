@@ -5,6 +5,7 @@ from nunchaku import NunchakuFluxTransformer2DModelV2
 from nunchaku.utils import get_precision
 
 precision = get_precision()  # auto-detect your precision is 'int4' or 'fp4' based on your GPU
+print(precision)
 transformer = NunchakuFluxTransformer2DModelV2.from_pretrained(
     f"nunchaku-tech/nunchaku-flux.1-schnell/svdq-{precision}_r32-flux.1-schnell.safetensors"
 )
@@ -14,10 +15,10 @@ pipeline = FluxPipeline.from_pretrained(
 
 image = pipeline(
     "A cat holding a sign that says hello world",
-    width=512,
-    height=512,
+    width=1024,
+    height=1024,
     generator=torch.manual_seed(0),
     num_inference_steps=4,
     guidance_scale=0,
 ).images[0]
-image.save(f"/home/bowenx/workspace/test.png")
+image.save(f"/FirstIntelligence/home/bowen/nunchaku/test.png")

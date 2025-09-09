@@ -102,8 +102,36 @@ class NunchakuLinear(nn.Module):
             device=linear.weight.device,
             **kwargs,
         )
+    
+    def forward_split(self, main_act_in: torch.Tensor, lora_act_in: torch.Tensor, ) -> torch.Tensor:
+        if self.packed: 
+            self.proj_down.data = unpack_lowrank_weight(self.proj_down.data, down=True)
+            self.proj_up.data = unpack_lowrank_weight(self.proj_up.data, down=False)
+            self.qweight.data = unpack_weight(self.qweight.data, n=self.out_features, k=self.in_features, bits=4)
+            self.smooth_factor.data = unpack_scale(self.smooth_factor.data, n=self.in_features, group_size=-1).view(-1)
+            if self.bias is not None:
+                self.bias.data = unpack_scale(self.bias.data, n=self.out_features, group_size=self.group_size).view(-1)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
+            self.wscales.data = unpack_scale(self.wscales.data, n=self.out_features, group_size=-1)
+            self.dequantized_weight = self.dequantize_weight()
+            del self.qweight
+            del self.wscales
+            del self.smooth_factor_orig
+            self.packed = False
+
+        lora_output = (lora_act_in @ self.proj_down.t()) @ self.proj_up.t()
+
+        smooth_factor_qkv = self.smooth_factor
+        x_smoothed = main_act_in / smooth_factor_qkv
+
+        main_output = F.linear(x_smoothed, self.dequantized_weight)
+        output = main_output + lora_output
+        if self.bias is not None:
+            output += self.bias
+
+        return output
+       
+    def forward(self, x: torch.Tensor, split = False) -> torch.Tensor:
         if self.packed: 
             self.proj_down.data = unpack_lowrank_weight(self.proj_down.data, down=True)
             self.proj_up.data = unpack_lowrank_weight(self.proj_up.data, down=False)
@@ -125,9 +153,11 @@ class NunchakuLinear(nn.Module):
         x_smoothed = x / smooth_factor_qkv
 
         main_output = F.linear(x_smoothed, self.dequantized_weight)
-
-        output = main_output + lora_output
-
+        if split:
+            main_output += self.bias
+            return main_output, lora_output
+        else:
+            output = main_output + lora_output
         if self.bias is not None:
             output += self.bias
 

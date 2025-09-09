@@ -2,6 +2,7 @@ import json
 import os
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple, Union
+import torch.nn as nn
 
 import torch
 from diffusers.models.modeling_outputs import Transformer2DModelOutput
@@ -179,14 +180,14 @@ class NunchakuFluxSingleTransformerBlock(FluxSingleTransformerBlock):
         self.norm = block.norm
         self.norm = NunchakuAdaLayerNormZeroSingle(block.norm, scale_shift=scale_shift)
 
-        self.mlp_fc1 = SVDQW4A4Linear.from_linear(block.proj_mlp, **kwargs)
+        self.mlp_fc1 = NunchakuLinear.from_linear(block.proj_mlp, **kwargs)
         self.act_mlp = block.act_mlp
-        self.mlp_fc2 = SVDQW4A4Linear.from_linear(block.proj_out, in_features=self.mlp_hidden_dim, **kwargs)
+        self.mlp_fc2 = NunchakuLinear.from_linear(block.proj_out, in_features=self.mlp_hidden_dim, **kwargs)
         # for int4, we shift the activation of mlp_fc2 to make it unsigned
         self.mlp_fc2.act_unsigned = self.mlp_fc2.precision != "nvfp4"
 
         self.attn = NunchakuFluxAttention(block.attn, **kwargs)
-        self.attn.to_out = SVDQW4A4Linear.from_linear(block.proj_out, in_features=self.mlp_fc1.in_features, **kwargs)
+        self.attn.to_out = NunchakuLinear.from_linear(block.proj_out, in_features=self.mlp_fc1.in_features, **kwargs)
 
         self.packed = True
 
@@ -200,15 +201,19 @@ class NunchakuFluxSingleTransformerBlock(FluxSingleTransformerBlock):
         residual = hidden_states
         norm_hidden_states, gate = self.norm(hidden_states, emb=temb)
 
-        # Feedforward
-        if isinstance(self.act_mlp, GELU):
-            # use fused gelu mlp
-            mlp_hidden_states = fused_gelu_mlp(norm_hidden_states, self.mlp_fc1, self.mlp_fc2)
-        else:
-            # fallback to original gelu mlp
-            mlp_hidden_states = self.mlp_fc1(norm_hidden_states)
-            mlp_hidden_states = self.act_mlp(mlp_hidden_states)
-            mlp_hidden_states = self.mlp_fc2(mlp_hidden_states)
+
+        mlp_hidden_states = self.mlp_fc1(norm_hidden_states)
+        
+        mlp_hidden_states = self.act_mlp(mlp_hidden_states)
+        main_input = mlp_hidden_states + 0.171875
+        mlp_hidden_states = self.mlp_fc2.forward_split(main_input, mlp_hidden_states)
+
+        # main_output, lora_output = self.mlp_fc1(norm_hidden_states, split=True)
+        
+        # main_output = self.act_mlp(main_output)
+        # lora_output = self.act_mlp(lora_output)
+        # lora_output += 0.171875
+        # mlp_hidden_states = self.mlp_fc2.forward_split(main_output, lora_output)
 
         # Attention
         joint_attention_kwargs = joint_attention_kwargs or {}

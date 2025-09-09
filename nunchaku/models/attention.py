@@ -3,8 +3,7 @@ from diffusers.models.activations import GELU
 from diffusers.models.attention import FeedForward
 from torch import nn
 
-from ..ops.fused import fused_gelu_mlp
-from .linear import SVDQW4A4Linear
+from .linear import NunchakuLinear
 
 
 class NunchakuBaseAttention(nn.Module):
@@ -29,15 +28,20 @@ def _patch_linear(module: nn.Module, linear_cls, **kwargs) -> nn.Module:
 class NunchakuFeedForward(FeedForward):
     def __init__(self, ff: FeedForward, **kwargs):
         super(FeedForward, self).__init__()
-        self.net = _patch_linear(ff.net, SVDQW4A4Linear, **kwargs)
+        self.net = _patch_linear(ff.net, NunchakuLinear, **kwargs)
         # for int4, we shift the activation of mlp_fc2 to make it unsigned
         self.net[2].act_unsigned = self.net[2].precision != "nvfp4"
-
+        self.act_mlp = nn.GELU()
     def forward(self, hidden_states: torch.Tensor) -> torch.Tensor:
-        if isinstance(self.net[0], GELU):
-            return fused_gelu_mlp(hidden_states, self.net[0].proj, self.net[2])
-        else:
-            # fallback to original implementation
-            for module in self.net:
-                hidden_states = module(hidden_states)
-            return hidden_states
+        hidden_states = self.net[0].proj(hidden_states)
+        
+        hidden_states = self.act_mlp(hidden_states)
+        main_input = hidden_states + 0.171875
+        hidden_states = self.net[2].forward_split(main_input, hidden_states)
+        # main_output, lora_output = self.net[0].proj(hidden_states, split=True)
+        
+        # main_output = self.act_mlp(main_output)
+        # lora_output = self.act_mlp(lora_output)
+        # main_output += 0.171875
+        # hidden_states = self.net[2].forward_split(main_output, lora_output)
+        return hidden_states

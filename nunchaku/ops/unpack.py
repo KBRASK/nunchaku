@@ -1,7 +1,7 @@
 import torch
 
 
-def unpack_weight(packed_weight: torch.Tensor, n: int, k: int, bits: int) -> torch.Tensor:
+def unpack_weight(packed_weight: torch.Tensor, n: int, k: int, bits: int, unsigned = False) -> torch.Tensor:
     assert packed_weight.dtype == torch.int8, f"Packed weight should be torch.int8, but got {packed_weight.dtype}."
 
     num_n_packs = 8
@@ -36,9 +36,9 @@ def unpack_weight(packed_weight: torch.Tensor, n: int, k: int, bits: int) -> tor
 
         shift = torch.arange(0, 32, 4, dtype=torch.int32, device=unpacked.device)
         unpacked = unpacked.unsqueeze(-1).bitwise_right_shift(shift).bitwise_and_(0xF)
-        mask = unpacked > 7
-        
-        unpacked[mask] = unpacked[mask].sub_(16)
+        if not unsigned:
+            mask = unpacked > 7
+            unpacked[mask] = unpacked[mask].sub_(16)
     elif bits == 8:
         reg_k = 4
         mem_k = num_k_packs * k_pack_size * num_k_lanes * reg_k  # 32
@@ -59,9 +59,9 @@ def unpack_weight(packed_weight: torch.Tensor, n: int, k: int, bits: int) -> tor
 
         shift = torch.arange(0, 32, 8, dtype=torch.int32, device=unpacked.device)
         unpacked = unpacked.unsqueeze(-1).bitwise_right_shift(shift).bitwise_and_(0xFF)
-        mask = unpacked > 127
-        
-        unpacked[mask] = unpacked[mask].sub_(128)
+        if not unsigned:
+            mask = unpacked > 127
+            unpacked[mask] = unpacked[mask].sub_(256)
     else:
         raise NotImplementedError(f"Weight bits {bits} is not supported.")
 
