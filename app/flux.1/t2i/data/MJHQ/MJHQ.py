@@ -60,7 +60,7 @@ class DCI(datasets.GeneratorBasedBuilder):
                 "category": datasets.Value("string"),
                 "image": datasets.Image(),
                 "prompt": datasets.Value("string"),
-                "prompt_path": datasets.Value("string"),
+                "meta_path": datasets.Value("string"),   # <--- ADD THIS LINE
                 "image_root": datasets.Value("string"),
                 "image_path": datasets.Value("string"),
                 "split": datasets.Value("string"),

@@ -1,0 +1,3 @@
+eval "$(/FirstIntelligence/home/bowen/miniconda3/bin/conda shell.posix hook)"
+conda activate  /FirstIntelligence/home/bowen/miniconda3/envs/nunchaku
+python /FirstIntelligence/home/bowen/nunchaku/app/flux.1/t2i/latency.py
