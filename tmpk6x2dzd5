@@ -1,3 +1,0 @@
-eval "$(/FirstIntelligence/home/bowen/miniconda3/bin/conda shell.posix hook)"
-conda activate  /FirstIntelligence/home/bowen/miniconda3/envs/nunchaku
-python /FirstIntelligence/home/bowen/nunchaku/examples/flux.1-schnell.py
