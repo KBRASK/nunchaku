@@ -177,6 +177,7 @@ def get_precision(
     AssertionError
         If precision is not one of "auto", "int4", or "fp4".
     """
+    return "fp4"
     assert precision in ("auto", "int4", "fp4")
     if precision == "auto":
         if isinstance(device, str):
