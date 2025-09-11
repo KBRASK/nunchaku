@@ -1,5 +1,5 @@
 import torch
-
+from ..utils import ceil_divide
 
 def unpack_weight(packed_weight: torch.Tensor, n: int, k: int, bits: int, unsigned = False) -> torch.Tensor:
     assert packed_weight.dtype == torch.int8, f"Packed weight should be torch.int8, but got {packed_weight.dtype}."
@@ -119,3 +119,35 @@ def unpack_scale(packed_scale: torch.Tensor, n: int, group_size: int) -> torch.T
     original_scale = unpacked_scale.view(n, -1)
 
     return original_scale
+def unpack_micro_scale(
+    packed_scale: torch.Tensor, 
+    n: int, 
+    group_size: int
+) -> torch.Tensor:
+    assert packed_scale.dtype == torch.float8_e4m3fn, "Packed micro scale must be float8_e4m3fn."
+    assert group_size == 16, "Currently only support group size 16 for micro-scale unpacking."
+
+    s_pack_size = 4
+    num_s_lanes = 4 * 8
+    num_s_packs = ceil_divide(128, s_pack_size * num_s_lanes)
+    warp_s = num_s_packs * num_s_lanes * s_pack_size
+    assert warp_s == 128
+    num_k_groups = packed_scale.numel() // n
+    shape_after_permute = (
+        n // warp_s,
+        num_k_groups // (64 // group_size),
+        num_s_packs,
+        8,
+        4,
+        s_pack_size,
+        64 // group_size
+    )
+
+    scale = packed_scale.view(shape_after_permute)
+    inverse_permute = (0, 2, 5, 4, 3, 1, 6)
+    scale = scale.permute(*inverse_permute).contiguous()
+
+    scale = scale.view(n, -1)
+    scale = scale.to(dtype=torch.bfloat16)
+
+    return scale

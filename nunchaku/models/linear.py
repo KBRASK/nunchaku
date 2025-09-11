@@ -4,7 +4,7 @@ from torch import nn
 from ..ops.gemm import svdq_gemm_w4a4_cuda
 from ..ops.gemv import awq_gemv_w4a16_cuda
 from ..ops.quantize import svdq_quantize_w4a4_act_fuse_lora_cuda
-from ..ops.unpack import unpack_lowrank_weight, unpack_weight, unpack_scale
+from ..ops.unpack import unpack_lowrank_weight, unpack_weight, unpack_scale, unpack_micro_scale
 import torch.nn.functional as F
 import gc
 
@@ -81,13 +81,23 @@ class NunchakuLinear(nn.Module):
         self.hidden_dim = 3072
 
     def dequantize_weight(self) -> torch.Tensor:
-        qweight = self.qweight.view(self.out_features, self.in_features//self.group_size, self.group_size).to(self.torch_dtype)
-        scales = self.wscales.view(self.out_features, self.in_features//self.group_size, 1)
-        dequantized_weight = qweight * scales
-        # scales_transposed = self.wscales.transpose(0, 1)
-        
-        # scales = scales_transposed.repeat_interleave(self.group_size, dim=0)
-        # dequantized_weight = self.qweight.to(self.torch_dtype) * scales
+        if self.precision == "nvfp4":            
+            codebook = torch.tensor(
+                [0.0, 0.5, 1.0, 1.5, 2.0, 3.0, 4.0, 6.0, -0.0, -0.5, -1.0, -1.5, -2.0, -3.0, -4.0, -6.0],
+                dtype=self.torch_dtype,
+                device=self.qweight.device,
+            )
+            looked_up_weights = codebook[self.qweight]
+            
+            looked_up_weights = looked_up_weights.view(self.out_features, self.in_features // self.group_size, self.group_size)            
+            wscales = self.wscales.view(self.out_features, self.in_features // self.group_size, 1)
+            wcscales = self.wcscales.view(self.out_features, 1, 1)
+            wtscale = self.wtscale
+            dequantized_weight = looked_up_weights * wscales * wcscales * wtscale
+        else:
+            qweight = self.qweight.view(self.out_features, self.in_features//self.group_size, self.group_size).to(self.torch_dtype)
+            scales = self.wscales.view(self.out_features, self.in_features//self.group_size, 1)
+            dequantized_weight = qweight * scales
 
         return dequantized_weight.view(self.out_features, self.in_features)
 
@@ -108,11 +118,15 @@ class NunchakuLinear(nn.Module):
             self.proj_down.data = unpack_lowrank_weight(self.proj_down.data, down=True)
             self.proj_up.data = unpack_lowrank_weight(self.proj_up.data, down=False)
             self.qweight.data = unpack_weight(self.qweight.data, n=self.out_features, k=self.in_features, bits=4)
-            self.smooth_factor.data = unpack_scale(self.smooth_factor.data, n=self.in_features, group_size=-1).view(-1)
+            self.smooth_factor.data = unpack_scale(self.smooth_factor.data, n=self.in_features, group_size=self.group_size).view(-1)
             if self.bias is not None:
                 self.bias.data = unpack_scale(self.bias.data, n=self.out_features, group_size=self.group_size).view(-1)
+            if self.precision == "nvfp4":
+                self.wscales.data = unpack_micro_scale(self.wscales.data, n=self.out_features, group_size=self.group_size)
+                self.wcscales.data = unpack_scale(self.wcscales.data, n=self.out_features, group_size=self.group_size)
+            else:
+                self.wscales.data = unpack_scale(self.wscales.data, n=self.out_features, group_size=self.group_size)
 
-            self.wscales.data = unpack_scale(self.wscales.data, n=self.out_features, group_size=-1)
             self.dequantized_weight = self.dequantize_weight()
             del self.qweight
             del self.wscales
@@ -136,11 +150,15 @@ class NunchakuLinear(nn.Module):
             self.proj_down.data = unpack_lowrank_weight(self.proj_down.data, down=True)
             self.proj_up.data = unpack_lowrank_weight(self.proj_up.data, down=False)
             self.qweight.data = unpack_weight(self.qweight.data, n=self.out_features, k=self.in_features, bits=4)
-            self.smooth_factor.data = unpack_scale(self.smooth_factor.data, n=self.in_features, group_size=-1).view(-1)
+            self.smooth_factor.data = unpack_scale(self.smooth_factor.data, n=self.in_features, group_size=self.group_size).view(-1)
             if self.bias is not None:
                 self.bias.data = unpack_scale(self.bias.data, n=self.out_features, group_size=self.group_size).view(-1)
 
-            self.wscales.data = unpack_scale(self.wscales.data, n=self.out_features, group_size=-1)
+            if self.precision == "nvfp4":
+                self.wscales.data = unpack_micro_scale(self.wscales.data, n=self.out_features, group_size=self.group_size)
+                self.wcscales.data = unpack_scale(self.wcscales.data, n=self.out_features, group_size=self.group_size)
+            else:
+                self.wscales.data = unpack_scale(self.wscales.data, n=self.out_features, group_size=self.group_size)
             self.dequantized_weight = self.dequantize_weight()
             del self.qweight
             del self.wscales
