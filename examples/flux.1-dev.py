@@ -11,7 +11,6 @@ transformer = NunchakuFluxTransformer2DModelV2.from_pretrained(
 pipeline = FluxPipeline.from_pretrained(
     "black-forest-labs/FLUX.1-dev", transformer=transformer, torch_dtype=torch.bfloat16
 ).to("cuda")
-pipeline.enable_sequential_cpu_offload()  # diffusers' offloading
 
 image = pipeline(
     "A cat holding a sign that says hello world",
@@ -19,4 +18,4 @@ image = pipeline(
     num_inference_steps=10,
     guidance_scale=3.5,
 ).images[0]
-image.save(f"/home/bowenx/workspace/test.png")
+image.save(f"test_dev.png")

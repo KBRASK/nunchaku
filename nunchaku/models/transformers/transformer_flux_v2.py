@@ -206,10 +206,10 @@ class NunchakuFluxSingleTransformerBlock(FluxSingleTransformerBlock):
         
         mlp_hidden_states = self.act_mlp(mlp_hidden_states)
         if self.mlp_fc1.precision != "nvfp4":
-            main_input = mlp_hidden_states + 0.171875
+            split = True
         else:
-            main_input = mlp_hidden_states
-        mlp_hidden_states = self.mlp_fc2.forward_split(main_input, mlp_hidden_states)
+            split = False
+        mlp_hidden_states = self.mlp_fc2(mlp_hidden_states, split)
 
         # main_output, lora_output = self.mlp_fc1(norm_hidden_states, split=True)
         

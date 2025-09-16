@@ -37,10 +37,10 @@ class NunchakuFeedForward(FeedForward):
         
         hidden_states = self.act_mlp(hidden_states)
         if self.net[2].precision != "nvfp4":
-            main_input = hidden_states + 0.171875
+            split = True
         else:
-            main_input = hidden_states
-        hidden_states = self.net[2].forward_split(main_input, hidden_states)
+            split = False
+        hidden_states = self.net[2](hidden_states, split)
         # main_output, lora_output = self.net[0].proj(hidden_states, split=True)
         
         # main_output = self.act_mlp(main_output)

@@ -87,3 +87,5 @@ Remember to replace the example paths with the actual paths to your image folder
 - The script will calculate quality metrics (CLIP IQA, CLIP Score, Image Reward, FID) only for the first folder specified. Ensure the INT4 results folder is listed first.
 - **Similarity Metrics**: If a second folder path is not provided, similarity metrics (LPIPS, PSNR, SSIM) will be skipped.
 - **Output File**: Metric results are saved in `metrics.json` by default. Use `-o` to specify a custom output file if needed.
+
+results/schnell/fp4 results/schnell/bf16

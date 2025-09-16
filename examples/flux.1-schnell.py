@@ -21,4 +21,4 @@ image = pipeline(
     num_inference_steps=4,
     guidance_scale=0,
 ).images[0]
-image.save(f"/FirstIntelligence/home/bowen/nunchaku/test.png")
+image.save(f"test_schnell.png")
